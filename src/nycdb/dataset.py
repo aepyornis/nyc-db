@@ -8,6 +8,7 @@ from tqdm import tqdm
 from . import verify
 from . import dataset_transformations
 from . import sql
+from . import plugins
 from .database import Database
 from .typecast import Typecast
 from .file import File
@@ -88,9 +89,32 @@ class Dataset:
         else:
             logging.debug('no index files exist for this dataset')
 
+    def _get_transformed_dataset_rows_using_module(self, schema, dataset_transformations_module):
+        rows_func = getattr(dataset_transformations_module, schema['table_name'], None)
+        if rows_func:
+            return rows_func(self)
+        rows_func = getattr(dataset_transformations_module, self.name, None)
+        if rows_func:
+            return rows_func(self, schema)
+        return None
+
+    def _get_transformed_dataset_rows(self, schema):
+        for plugin in plugins.iter_plugins():
+            dt_module = plugin.import_submodule('dataset_transformations')
+            rows = self._get_transformed_dataset_rows_using_module(schema, dt_module)
+            if rows is not None:
+                return rows
+
+        table_name = schema['table_name']
+        raise Exception(
+            f"Unable to find transformer for dataset {self.name}, "
+            f"table {table_name}. Please define {table_name}(dataset) or "
+            f"{self.name}(dataset, schema) in dataset_transformations."
+        )
+
     def transform(self, schema):
         """
-        Calls the function in dataset_transformation with the same name
+        Calls the function in dataset_transformations with the same name
         as the schema.
 
         If no function exists with the same name as the schema table, it tries
@@ -101,10 +125,7 @@ class Dataset:
         """
         tc = Typecast(schema)
 
-        try:
-            rows = getattr(dataset_transformations, schema['table_name'])(self)
-        except AttributeError:
-            rows = getattr(dataset_transformations, self.name)(self, schema)
+        rows = self._get_transformed_dataset_rows(schema)
 
         return tc.cast_rows(rows)
 
